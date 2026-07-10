@@ -141,6 +141,7 @@ row here.**
 | 119 | Promote generated beam state into typed anchors | model-runtime/performance |
 | 120 | Adapt beam work to visible-candidate certainty | generation/performance |
 | 121 | Batch correction candidates by token depth | generation/performance |
+| 122 | Refine bare detected-language tags with the user's regional variant | generation/correction |
 
 ---
 
@@ -3701,3 +3702,27 @@ text. Both are now closed:
   from 18 serial paths to 8 batched frontiers and wall time from 103.1 ms to 62.9 ms (39%), while
   returning the same validated replacements. Empty or unscorable paths still receive negative
   infinity and are suppressed by the existing thresholds.
+## ADR-122 — Refine bare detected-language tags with the user's regional variant
+
+- Date: 2026-07-10
+- Status: accepted
+- Context: `LanguageDetector` (NLLanguageRecognizer) emits base tags only (`"en"`, never
+  `"en-GB"`), and both spell-language resolvers (`SystemWordRecognizer.resolveLanguage`, the
+  correction lane's `SystemCorrectionLanguage.resolve`) exact-matched that bare tag against
+  `NSSpellChecker.availableLanguages` — resolving to the generic `"en"` dictionary, which is
+  US-flavoured (empirically: `colour`/`realise`/`organise` flagged as misspellings;
+  `completions(forPartialWordRange:)` on `"colou"` returns 0). On a British-English system this
+  made the in-beam typo guard (ADR-015) drop correctly-spelled British branches, the dead-end
+  guard (ADR-052/056) suppress completions mid-word (`currentWordHasNoValidCompletion`), and the
+  correction lane liable to "correct" British spellings toward US.
+- Decision: Add a shared app-target resolver (`SpellingLanguage.resolve`): when the requested tag
+  is a bare base tag, first look for the user's preferred regional variant of that language
+  (`Locale.preferredLanguages` — the same OS-derived signal ADR-089 uses for prompt style) among
+  the installed dictionaries; only then fall back to exact match, base, and `nil` (auto-detect).
+  Region-qualified requests keep exact-match priority; both existing resolvers delegate to it.
+- Consequences: On an `en-GB` system, detected `"en"` now resolves to `en_GB` (verified by a
+  compiled harness against the live checker: British words recognised, `color`/`realize` flagged,
+  `"colou"` yields 20 completions). US-preference systems are unchanged (`en_US` is not an
+  installed dictionary; resolution falls back to `"en"` as before). Non-English languages with
+  regional prefs (e.g. `fr-CA`) gain the same refinement. The resolver is a pure function covered
+  by deterministic app-target tests.

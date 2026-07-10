@@ -76,16 +76,10 @@ struct SystemWordRecognizer: WordRecognizing, SynchronousWordRecognizing {
         return misspelled.location == NSNotFound
     }
 
-    /// Map a detected-language tag (BCP-47 `"en-US"` or NSSpellChecker `"en_US"`) onto an installed
-    /// dictionary, falling back to the base language and then to `nil` (auto-detect) so we never
-    /// force a checker into a language it can't handle.
+    /// Map a detected-language tag onto an installed dictionary via `SpellingLanguage` (ADR-116):
+    /// a bare base tag ("en") is refined with the user's preferred regional variant ("en_GB")
+    /// before the generic dictionary, then falls back to base and `nil` (auto-detect).
     private static func resolveLanguage(_ requested: String?, checker: NSSpellChecker) -> String? {
-        guard let requested, !requested.isEmpty else { return nil }
-        let normalized = requested.replacingOccurrences(of: "-", with: "_")
-        let available = checker.availableLanguages
-        if available.contains(normalized) { return normalized }
-        let base = String(normalized.prefix { $0 != "_" })
-        if available.contains(base) { return base }
-        return nil
+        SpellingLanguage.resolve(requested, availableLanguages: checker.availableLanguages)
     }
 }

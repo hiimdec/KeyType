@@ -31,6 +31,7 @@
 		4B5450012FC9600000000043 /* CompletionAcceptanceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B5450012FC9600000000042 /* CompletionAcceptanceController.swift */; };
 		4B5450012FC9600000000045 /* FieldFontResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B5450012FC9600000000044 /* FieldFontResolver.swift */; };
 		4B5450012FC9600000000047 /* SystemWordRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B5450012FC9600000000046 /* SystemWordRecognizer.swift */; };
+		4B5450012FC9600000000902 /* SpellingLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B5450012FC9600000000901 /* SpellingLanguage.swift */; };
 		4B5450012FC9600000000501 /* CorrectionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B5450012FC9600000000500 /* CorrectionController.swift */; };
 		4B5450012FC9600000000503 /* SystemSpellcheckCorrectionDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B5450012FC9600000000502 /* SystemSpellcheckCorrectionDetector.swift */; };
 		4B5450012FC9600000000051 /* LlamaModelRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = 4B5450012FC9600000000050 /* LlamaModelRuntime */; };
@@ -109,6 +110,7 @@
 		4B5450012FC9600000000042 /* CompletionAcceptanceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionAcceptanceController.swift; sourceTree = "<group>"; };
 		4B5450012FC9600000000044 /* FieldFontResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldFontResolver.swift; sourceTree = "<group>"; };
 		4B5450012FC9600000000046 /* SystemWordRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemWordRecognizer.swift; sourceTree = "<group>"; };
+		4B5450012FC9600000000901 /* SpellingLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpellingLanguage.swift; sourceTree = "<group>"; };
 		4B5450012FC9600000000500 /* CorrectionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorrectionController.swift; sourceTree = "<group>"; };
 		4B5450012FC9600000000502 /* SystemSpellcheckCorrectionDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemSpellcheckCorrectionDetector.swift; sourceTree = "<group>"; };
 		4B5450012FC9600000000049 /* KeyType.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KeyType.entitlements; sourceTree = "<group>"; };
@@ -307,6 +309,7 @@
 				4B5450012FC96000000002A2 /* CompletionReuseHistory.swift */,
 				4B5450012FC9600000000044 /* FieldFontResolver.swift */,
 				4B5450012FC9600000000046 /* SystemWordRecognizer.swift */,
+				4B5450012FC9600000000901 /* SpellingLanguage.swift */,
 			);
 			path = Completion;
 			sourceTree = "<group>";
@@ -653,6 +656,7 @@
 				4B5450012FC9600000000043 /* CompletionAcceptanceController.swift in Sources */,
 				4B5450012FC9600000000045 /* FieldFontResolver.swift in Sources */,
 				4B5450012FC9600000000047 /* SystemWordRecognizer.swift in Sources */,
+				4B5450012FC9600000000902 /* SpellingLanguage.swift in Sources */,
 				4B5450012FC9600000000501 /* CorrectionController.swift in Sources */,
 				4B5450012FC9600000000503 /* SystemSpellcheckCorrectionDetector.swift in Sources */,
 				4B5450012FC9600000000311 /* FullPromptLog.swift in Sources */,
