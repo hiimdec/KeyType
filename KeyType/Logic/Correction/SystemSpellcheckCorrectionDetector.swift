@@ -337,7 +337,7 @@ struct SystemGrammarCorrectionDetector {
 }
 
 private enum SystemCorrectionLanguage {
-    /// Resolution shared with the completion path (`SpellingLanguage`, ADR-116) so the correction
+    /// Resolution shared with the completion path (`SpellingLanguage`, ADR-122) so the correction
     /// lane can never "correct" a regional spelling the typo guard accepts (colour → color).
     static func resolve(_ requested: String?, checker: NSSpellChecker) -> String? {
         SpellingLanguage.resolve(requested, availableLanguages: checker.availableLanguages)

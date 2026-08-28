@@ -3702,9 +3702,10 @@ text. Both are now closed:
   from 18 serial paths to 8 batched frontiers and wall time from 103.1 ms to 62.9 ms (39%), while
   returning the same validated replacements. Empty or unscorable paths still receive negative
   infinity and are suppressed by the existing thresholds.
+
 ## ADR-122 — Refine bare detected-language tags with the user's regional variant
 
-- Date: 2026-07-10
+- Date: 2026-08-29
 - Status: accepted
 - Context: `LanguageDetector` (NLLanguageRecognizer) emits base tags only (`"en"`, never
   `"en-GB"`), and both spell-language resolvers (`SystemWordRecognizer.resolveLanguage`, the
@@ -3716,9 +3717,10 @@ text. Both are now closed:
   guard (ADR-052/056) suppress completions mid-word (`currentWordHasNoValidCompletion`), and the
   correction lane liable to "correct" British spellings toward US.
 - Decision: Add a shared app-target resolver (`SpellingLanguage.resolve`): when the requested tag
-  is a bare base tag, first look for the user's preferred regional variant of that language
+  is a bare base tag, first look at the user's highest-priority preferred variant of that language
   (`Locale.preferredLanguages` — the same OS-derived signal ADR-089 uses for prompt style) among
-  the installed dictionaries; only then fall back to exact match, base, and `nil` (auto-detect).
+  the installed dictionaries. If that primary variant is unavailable, fall back to exact match,
+  base, and `nil` (auto-detect), rather than selecting a lower-priority regional preference.
   Region-qualified requests keep exact-match priority; both existing resolvers delegate to it.
 - Consequences: On an `en-GB` system, detected `"en"` now resolves to `en_GB` (verified by a
   compiled harness against the live checker: British words recognised, `color`/`realize` flagged,

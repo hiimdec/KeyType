@@ -162,6 +162,40 @@ struct KeyTypeTests {
         ) == 4)
     }
 
+    @Test func spellingLanguageRefinesBareTagWithPreferredInstalledVariant() {
+        #expect(SpellingLanguage.resolve(
+            "en",
+            availableLanguages: ["en", "en_AU", "en_GB"],
+            preferredLanguages: ["fr-FR", "en-GB", "en-AU"]
+        ) == "en_GB")
+    }
+
+    @Test func spellingLanguageKeepsExplicitRegionalRequest() {
+        #expect(SpellingLanguage.resolve(
+            "en-GB",
+            availableLanguages: ["en", "en_GB"],
+            preferredLanguages: ["en-AU"]
+        ) == "en_GB")
+    }
+
+    @Test func spellingLanguageFallsBackConservatively() {
+        #expect(SpellingLanguage.resolve(
+            "en",
+            availableLanguages: ["en", "en_CA"],
+            preferredLanguages: ["en-US", "en-CA"]
+        ) == "en")
+        #expect(SpellingLanguage.resolve(
+            "fr",
+            availableLanguages: ["en"],
+            preferredLanguages: ["fr-CA"]
+        ) == nil)
+        #expect(SpellingLanguage.resolve(
+            nil,
+            availableLanguages: ["en_GB"],
+            preferredLanguages: ["en-GB"]
+        ) == nil)
+    }
+
     @Test @MainActor func correctionSuffixWindowIgnoresLeadingPunctuation() {
         #expect(CompletionController.correctionSuffixWindow(from: " , they are shown") == "")
         #expect(CompletionController.correctionSuffixWindow(from: ", they are shown") == "")

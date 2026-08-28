@@ -76,7 +76,7 @@ struct SystemWordRecognizer: WordRecognizing, SynchronousWordRecognizing {
         return misspelled.location == NSNotFound
     }
 
-    /// Map a detected-language tag onto an installed dictionary via `SpellingLanguage` (ADR-116):
+    /// Map a detected-language tag onto an installed dictionary via `SpellingLanguage` (ADR-122):
     /// a bare base tag ("en") is refined with the user's preferred regional variant ("en_GB")
     /// before the generic dictionary, then falls back to base and `nil` (auto-detect).
     private static func resolveLanguage(_ requested: String?, checker: NSSpellChecker) -> String? {
