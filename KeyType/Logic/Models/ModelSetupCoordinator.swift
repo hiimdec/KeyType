@@ -281,9 +281,14 @@ final class ModelSetupCoordinator {
                 self.onModelReady?(filename)
             } catch {
                 guard let self else { return }
-                self.profilePhases[filename] = .failed(error.localizedDescription)
+                // Prefer the typed error's own description (e.g. `ACPFCLIError.selfCheckFailed` lists
+                // which checks failed) over `localizedDescription`, which would flatten our profile /
+                // llama errors to a generic "operation couldn't be completed (error N)" string. This
+                // mirrors the import path and is what the user sees in the inline status line.
+                let message = Self.message(for: error)
+                self.profilePhases[filename] = .failed(message)
                 self.profileTasks[filename] = nil
-                self.log.error("Profile generation failed for \(filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                self.log.error("Profile generation failed for \(filename, privacy: .public): \(message, privacy: .public)")
             }
         }
         profileTasks[filename] = task
