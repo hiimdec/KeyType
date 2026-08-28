@@ -136,6 +136,7 @@ row here.**
 | 114 | Lower spellcheck correction model margin | correction/model-runtime |
 | 115 | Remove aggressive correction mode | correction/settings |
 | 116 | Bound mid-line decode to visible tokens plus lookahead | generation/performance |
+| 117 | Make four tokens the default completion depth | generation/performance |
 
 ---
 
@@ -3606,3 +3607,19 @@ text. Both are now closed:
 - Consequences: Focused release evaluation retained the quality and precision of the eight-token
   path while reducing median generation latency by about 30%. The cap is aligned with the final
   visibility gate, and healed requests retain enough room to satisfy their required prefix.
+
+## ADR-117 — Make four tokens the default completion depth
+
+- Date: 2026-08-29
+- Status: accepted
+- Context: The default Medium preset decoded eight tokens even though autocomplete primarily needs
+  a short continuation. Release evaluation showed that the additional depth increased GPU work and
+  more often continued a useful short branch into text that the final quality gates rejected.
+- Decision: Set the default Medium preset to four generation tokens. Keep its 60-character display
+  width, so naturally long tokenizer pieces are not truncated, and retain the explicit Long preset
+  at sixteen tokens for users who deliberately request extended suggestions.
+- Consequences: On the 700-case core suite, four tokens improved the utility score from 0.1816 to
+  0.1989, reduced wrong shows from 0.6829 to 0.6686, and reduced median generation latency from
+  95.1 ms to 75.5 ms. Short and Medium now
+  share a decode-depth ceiling but retain distinct display-width policies; Long remains available
+  and is handled by the burst-aware staging policy.

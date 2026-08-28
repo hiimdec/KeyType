@@ -106,6 +106,15 @@ struct KeyTypeTests {
         ) == 9)
     }
 
+    @Test func defaultMediumLengthUsesFourTokenBudget() {
+        #expect(CompletionLength.medium.maxCompletionTokens == 4)
+        #expect(CompletionLength.medium.maxDisplayWidth == 60)
+    }
+
+    @Test func explicitLongLengthRetainsExtendedBudget() {
+        #expect(CompletionLength.long.maxCompletionTokens == 16)
+    }
+
     @Test @MainActor func correctionSuffixWindowIgnoresLeadingPunctuation() {
         #expect(CompletionController.correctionSuffixWindow(from: " , they are shown") == "")
         #expect(CompletionController.correctionSuffixWindow(from: ", they are shown") == "")
