@@ -138,6 +138,7 @@ row here.**
 | 116 | Bound mid-line decode to visible tokens plus lookahead | generation/performance |
 | 117 | Make four tokens the default completion depth | generation/performance |
 | 118 | Stage long decode work during typing bursts | generation/performance |
+| 119 | Promote generated beam state into typed anchors | model-runtime/performance |
 
 ---
 
@@ -3643,3 +3644,21 @@ text. Both are now closed:
   extension, avoiding an energy rebound after the first result. On the 100-case release latency
   suite, the staged four-token path reduced p50/p95 generation from 118.1/149.7 ms to 62.1/85.0 ms
   and reduced wrong shows from 0.88 to 0.83 versus running all sixteen tokens.
+
+## ADR-119 — Promote generated beam state into typed anchors
+
+- Date: 2026-08-29
+- Status: accepted
+- Context: The incremental decoder already leaves final beam branches resident, but changing the
+  prompt invalidated that frontier before checking whether the user had typed one of those exact
+  generated token paths. String-level promotion avoided many controller requests, while short
+  remainders and subsequent typing still caused the runtime to decode already-computed tokens.
+- Decision: Retain each resident frontier sequence together with its next-token logits. Before
+  invalidating the frontier for a new anchor, promote the longest `old anchor + generated suffix`
+  that is an exact token prefix of the new anchor. Restore that native sequence as the canonical
+  anchor and decode only any additional delta. Keep historical snapshot and full-prefill fallbacks
+  unchanged for BPE retokenization, divergence, or a cache miss.
+- Consequences: Exact type-through paths perform zero duplicate decode when the generated suffix
+  becomes the next anchor, with identical cached logits. The optimization adds only the latest
+  frontier's copy-on-write logits references and does not widen `LocalModelRuntime`; unmatched
+  prompts preserve the previous correctness behavior.

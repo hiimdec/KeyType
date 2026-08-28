@@ -53,11 +53,16 @@ public actor LlamaModelRuntime: LocalModelRuntime {
     private nonisolated let maxSequences: Int
     /// The single sequence the runtime decodes into.
     private nonisolated let anchorSeq: llama_seq_id = 0
-    /// Incremental-beam frontier (ADR-046): maps a resident branch *suffix* to the sequence id whose
-    /// KV holds `anchor + suffix`. Valid only across consecutive `anchoredLogitsBatch` calls on the
-    /// same anchor; any other decode path invalidates it via `invalidateFrontier()`. The empty
-    /// suffix (root) is implicit — its state is `anchorSnapshot`, so it is never stored here.
-    private var frontier: [[TokenID]: Int] = [:]
+    /// Incremental-beam frontier (ADR-046): maps a resident branch *suffix* to the sequence whose
+    /// KV holds `anchor + suffix`, plus that branch's next-token logits. Keeping the logits lets a
+    /// later typed prompt promote the generated sequence to the new anchor without another decode
+    /// (ADR-119). Valid only until a non-matching decode invalidates it. The empty suffix (root) is
+    /// implicit — its state/logits are `anchorSnapshot`/`anchorEndLogits`.
+    private struct FrontierEntry {
+        var sequenceID: Int
+        var logits: [TokenLogit]
+    }
+    private var frontier: [[TokenID]: FrontierEntry] = [:]
     /// Tokens whose post-decode sequence state is captured in `anchorSnapshot`.
     private var anchorTokens: [TokenID] = []
     /// Serialized seq-0 state (`llama_state_seq_get_data`) immediately after decoding `anchorTokens`.
@@ -404,7 +409,12 @@ public actor LlamaModelRuntime: LocalModelRuntime {
             cursor = end
         }
         if pending.count <= groupSize {
-            for (slot, item) in pending.enumerated() { frontier[item.suffix] = slot }
+            for (slot, item) in pending.enumerated() {
+                frontier[item.suffix] = FrontierEntry(
+                    sequenceID: slot,
+                    logits: results[item.index]
+                )
+            }
         }
 
         // Leave the resident token bookkeeping at the pristine anchor. Future `ensureAnchor` reuse
@@ -443,7 +453,7 @@ public actor LlamaModelRuntime: LocalModelRuntime {
         // Slots reused in place by a non-root parent's first child are off-limits to forks.
         var reusedSlots = Set<Int>()
         for parent in parentOrder where !parent.isEmpty {
-            if let seq = frontier[parent] { reusedSlots.insert(seq) }
+            if let entry = frontier[parent] { reusedSlots.insert(entry.sequenceID) }
         }
         var freeSlots = (0..<maxSequences).filter { !reusedSlots.contains($0) }
 
@@ -460,14 +470,14 @@ public actor LlamaModelRuntime: LocalModelRuntime {
             func sourceSnapshot() throws -> [UInt8] {
                 if isRoot { return anchorSnapshot! }
                 if let s = forkSource { return s }
-                let s = try captureSequenceState(seq: llama_seq_id(frontier[parent]!))
+                let s = try captureSequenceState(seq: llama_seq_id(frontier[parent]!.sequenceID))
                 forkSource = s
                 return s
             }
             for (childIndex, child) in children.enumerated() {
                 let seq: Int
                 if childIndex == 0, !isRoot {
-                    seq = frontier[parent]!            // extend in place
+                    seq = frontier[parent]!.sequenceID // extend in place
                 } else {
                     guard !freeSlots.isEmpty else { return false }
                     seq = freeSlots.removeFirst()      // fork: clear the slot, copy the parent in
@@ -491,11 +501,12 @@ public actor LlamaModelRuntime: LocalModelRuntime {
         let rc = llama_decode(ctx, batch)
         if rc != 0 { throw LlamaRuntimeError.decodeFailed(rc) }
 
-        var newFrontier: [[TokenID]: Int] = [:]
+        var newFrontier: [[TokenID]: FrontierEntry] = [:]
         for (i, plan) in plans.enumerated() {
             guard let raw = llama_get_logits_ith(ctx, Int32(i)) else { throw LlamaRuntimeError.logitsUnavailable }
-            results[plan.index] = materializeLogits(raw)
-            newFrontier[plan.suffix] = plan.seq
+            let logits = materializeLogits(raw)
+            results[plan.index] = logits
+            newFrontier[plan.suffix] = FrontierEntry(sequenceID: plan.seq, logits: logits)
         }
         frontier = newFrontier
         return true
@@ -570,12 +581,15 @@ public actor LlamaModelRuntime: LocalModelRuntime {
             return
         }
 
-        // The anchor is changing, so any resident beam frontier (seqs holding `oldAnchor + suffix`)
-        // is stale — drop it before mutating the cache. Preserve the current anchor snapshot first:
-        // BPE typing often rewrites the tail token, but an older exact-prefix snapshot can still be
-        // restored safely and decoded forward.
-        invalidateFrontier()
+        // Preserve the current anchor before either promoting a generated branch or falling back to
+        // the historical-prefix path. If the new prompt contains a resident generated suffix, that
+        // branch already holds exactly the native recurrent/KV state we need.
         rememberAnchorSnapshotForHistory()
+        if try promoteResidentFrontier(to: anchor) { return }
+
+        // No generated branch matched. The frontier is stale before any cache mutation; BPE typing
+        // may still be recovered from an older exact-prefix anchor snapshot.
+        invalidateFrontier()
 
         if let snapshot = anchorSnapshot,
            anchorTokens.count < anchor.count,
@@ -600,6 +614,51 @@ public actor LlamaModelRuntime: LocalModelRuntime {
         anchorTokens = anchor
         anchorSnapshot = try captureSequenceState()
         anchorEndLogits = try readLogits()
+    }
+
+    /// Promote the longest resident `oldAnchor + generatedSuffix` that is an exact token prefix of
+    /// `anchor`. The matching sequence state was already computed by the prior beam. Restore it into
+    /// the canonical anchor sequence and decode only any tokens beyond that generated suffix.
+    private func promoteResidentFrontier(to anchor: [TokenID]) throws -> Bool {
+        guard !frontier.isEmpty,
+              !anchorTokens.isEmpty,
+              anchor.count > anchorTokens.count,
+              Self.hasPrefix(anchor, prefix: anchorTokens)
+        else { return false }
+
+        var best: (suffix: [TokenID], entry: FrontierEntry)?
+        for (suffix, entry) in frontier {
+            let generatedPrefix = anchorTokens + suffix
+            guard !suffix.isEmpty,
+                  generatedPrefix.count <= anchor.count,
+                  Self.hasPrefix(anchor, prefix: generatedPrefix)
+            else { continue }
+            if best == nil || suffix.count > best!.suffix.count {
+                best = (suffix, entry)
+            }
+        }
+        guard let best else { return false }
+
+        let promotedCount = anchorTokens.count + best.suffix.count
+        let promotedSnapshot = try captureSequenceState(
+            seq: llama_seq_id(best.entry.sequenceID)
+        )
+        invalidateFrontier()
+        try restore(promotedSnapshot, intoSeq: anchorSeq)
+
+        let delta = Array(anchor.dropFirst(promotedCount))
+        if delta.isEmpty {
+            lastPrepareDecodedCount = 0
+            anchorEndLogits = best.entry.logits
+        } else {
+            try decodeTokens(delta, startingAt: promotedCount, seqID: anchorSeq)
+            lastPrepareDecodedCount = delta.count
+            anchorEndLogits = try readLogits()
+        }
+        currentTokens = anchor
+        anchorTokens = anchor
+        anchorSnapshot = try captureSequenceState()
+        return true
     }
 
     private func rememberAnchorSnapshotForHistory() {

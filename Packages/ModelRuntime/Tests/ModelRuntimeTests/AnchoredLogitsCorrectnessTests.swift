@@ -351,6 +351,36 @@ final class AnchoredLogitsCorrectnessTests: XCTestCase {
         }
     }
 
+    /// Typing through a resident generated branch should turn that branch into the next request's
+    /// anchor without decoding its tokens again. The cached branch logits must remain the exact
+    /// next-token distribution for the promoted anchor.
+    func testGeneratedFrontierPromotesToNextAnchorWithoutDecode() async throws {
+        let runtime = try makeRuntime(enableKVFork: true)
+        let tok = runtime.tokenizer
+        let anchor = try tok.tokenize("I am writing to let you know that the meeting tomorrow")
+        let pool = try tok.tokenize(" is scheduled")
+        try XCTSkipUnless(!pool.isEmpty, "tokenizer produced no generated suffix tokens")
+        let suffix = [pool[0]]
+
+        let frontier = try await runtime.anchoredLogitsBatch(
+            anchor: anchor,
+            suffixes: [suffix]
+        )
+        let promoted = try await runtime.anchoredLogitsBatch(
+            anchor: anchor + suffix,
+            suffixes: [[]]
+        )
+
+        let decodedAfterPromotion = await runtime.lastPrepareDecodedCount
+        XCTAssertEqual(decodedAfterPromotion, 0)
+        assertSameDistribution(
+            promoted[0],
+            frontier[0],
+            "promoted generated frontier vs its cached next-token logits"
+        )
+        await runtime.shutdown()
+    }
+
     /// Disabling the flag falls back to the default full-decode path and must still be correct.
     func testDisabledForkMatchesFullDecode() async throws {
         let runtime = try makeRuntime(enableKVFork: false)
