@@ -137,6 +137,7 @@ row here.**
 | 115 | Remove aggressive correction mode | correction/settings |
 | 116 | Bound mid-line decode to visible tokens plus lookahead | generation/performance |
 | 117 | Make four tokens the default completion depth | generation/performance |
+| 118 | Stage long decode work during typing bursts | generation/performance |
 
 ---
 
@@ -3623,3 +3624,22 @@ text. Both are now closed:
   95.1 ms to 75.5 ms. Short and Medium now
   share a decode-depth ceiling but retain distinct display-width policies; Long remains available
   and is handled by the burst-aware staging policy.
+
+## ADR-118 — Stage long decode work during typing bursts
+
+- Date: 2026-08-29
+- Status: accepted
+- Context: The adaptive debounce intentionally overlaps generation with its presentation gate, so
+  moving the whole decode behind the gate would save work only by adding visible latency. Explicit
+  Long requests can still waste sixteen-token decodes when the next keystroke arrives before the
+  current generation could finish.
+- Decision: Keep generation immediate. When consecutive requests arrive within the larger of the
+  adaptive presentation gate and the last measured generation latency, cap only Long work to a
+  four-token first stage plus mandatory token-healing slack. A first request or a request following
+  a stable interval retains the full user-selected budget; normal four-token requests are unchanged.
+- Consequences: The common path gains no wait and no latency bump. Cancellation-prone Long work is
+  bounded to the same depth that passed the default quality gate, while deliberate Long generation
+  remains available after a stable interval. The policy does not schedule unconditional background
+  extension, avoiding an energy rebound after the first result. On the 100-case release latency
+  suite, the staged four-token path reduced p50/p95 generation from 118.1/149.7 ms to 62.1/85.0 ms
+  and reduced wrong shows from 0.88 to 0.83 versus running all sixteen tokens.

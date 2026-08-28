@@ -115,6 +115,53 @@ struct KeyTypeTests {
         #expect(CompletionLength.long.maxCompletionTokens == 16)
     }
 
+    @Test func burstAwareBudgetCapsCancellationProneLongRequest() {
+        #expect(CompletionController.burstAwareCompletionTokenBudget(
+            requestedMaxCompletionTokens: 16,
+            healExtraTokens: 0,
+            elapsedSincePreviousRequestNanoseconds: 20_000_000,
+            debounceNanoseconds: 25_000_000,
+            lastGenerationLatencyMs: 75
+        ) == 4)
+    }
+
+    @Test func burstAwareBudgetPreservesHealingSlack() {
+        #expect(CompletionController.burstAwareCompletionTokenBudget(
+            requestedMaxCompletionTokens: 17,
+            healExtraTokens: 1,
+            elapsedSincePreviousRequestNanoseconds: 20_000_000,
+            debounceNanoseconds: 25_000_000,
+            lastGenerationLatencyMs: 75
+        ) == 5)
+    }
+
+    @Test func burstAwareBudgetKeepsLongRequestAfterStableInterval() {
+        #expect(CompletionController.burstAwareCompletionTokenBudget(
+            requestedMaxCompletionTokens: 16,
+            healExtraTokens: 0,
+            elapsedSincePreviousRequestNanoseconds: 100_000_000,
+            debounceNanoseconds: 25_000_000,
+            lastGenerationLatencyMs: 75
+        ) == 16)
+    }
+
+    @Test func burstAwareBudgetNeverDelaysFirstOrDefaultRequest() {
+        #expect(CompletionController.burstAwareCompletionTokenBudget(
+            requestedMaxCompletionTokens: 16,
+            healExtraTokens: 0,
+            elapsedSincePreviousRequestNanoseconds: nil,
+            debounceNanoseconds: 25_000_000,
+            lastGenerationLatencyMs: 75
+        ) == 16)
+        #expect(CompletionController.burstAwareCompletionTokenBudget(
+            requestedMaxCompletionTokens: 4,
+            healExtraTokens: 0,
+            elapsedSincePreviousRequestNanoseconds: 10_000_000,
+            debounceNanoseconds: 55_000_000,
+            lastGenerationLatencyMs: 180
+        ) == 4)
+    }
+
     @Test @MainActor func correctionSuffixWindowIgnoresLeadingPunctuation() {
         #expect(CompletionController.correctionSuffixWindow(from: " , they are shown") == "")
         #expect(CompletionController.correctionSuffixWindow(from: ", they are shown") == "")

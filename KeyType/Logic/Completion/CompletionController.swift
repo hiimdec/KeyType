@@ -292,6 +292,9 @@ final class CompletionController {
     private var lastRenderedStyle: ResolvedFieldStyle?
     private var frozenSideContext: FrozenPromptSideContext?
     private var lastGenerationLatencyMs: Double?
+    /// Uptime of the previous request that reached model generation. Used only to recognize a
+    /// cancellation-prone typing burst; it never delays the current request.
+    private var lastGenerationRequestUptimeNanoseconds: UInt64?
     /// Set when the user accepts a word with Tab: keep the *rest* of the same suggestion in place and
     /// do not regenerate, so repeated Tab presses walk through the remaining words of that one
     /// completion. Cleared once the suggestion is exhausted, the user diverges, or the overlay is torn
@@ -616,10 +619,25 @@ final class CompletionController {
         let healExtraTokens = healSlack > 0 ? 1 : 0
         // Completion length is user-configurable (Settings) and maps to the decoder's token/width budget.
         let length = settings.completionLength
-        let maxCompletionTokens = Self.contextAwareCompletionTokenBudget(
+        let configuredMaxCompletionTokens = Self.contextAwareCompletionTokenBudget(
             baseMaxCompletionTokens: length.maxCompletionTokens,
             healExtraTokens: healExtraTokens,
             context: context
+        )
+        let debounceNanoseconds = Self.adaptiveDebounceNanoseconds(
+            lastGenerationLatencyMs: lastGenerationLatencyMs
+        )
+        let requestUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let elapsedSincePreviousRequest = lastGenerationRequestUptimeNanoseconds.map {
+            requestUptimeNanoseconds &- $0
+        }
+        lastGenerationRequestUptimeNanoseconds = requestUptimeNanoseconds
+        let maxCompletionTokens = Self.burstAwareCompletionTokenBudget(
+            requestedMaxCompletionTokens: configuredMaxCompletionTokens,
+            healExtraTokens: healExtraTokens,
+            elapsedSincePreviousRequestNanoseconds: elapsedSincePreviousRequest,
+            debounceNanoseconds: debounceNanoseconds,
+            lastGenerationLatencyMs: lastGenerationLatencyMs
         )
         let request = CompletionRequest(
             context: context,
@@ -649,9 +667,6 @@ final class CompletionController {
         // Debounce: coalesce rapid keystrokes, and DON'T hide the current ghost up front — we
         // transition directly old → new (or → hidden) when generation finishes, so typing updates
         // the suggestion in place instead of blinking it out and back in.
-        let debounceNanoseconds = Self.adaptiveDebounceNanoseconds(
-            lastGenerationLatencyMs: lastGenerationLatencyMs
-        )
         latencyTrace.eventDebounceScheduled(nanoseconds: debounceNanoseconds)
         generationTask?.cancel()
         debounceTask?.cancel()
@@ -1051,6 +1066,30 @@ final class CompletionController {
         let healing = max(0, healExtraTokens)
         guard shouldUseCapsule(for: context) else { return base + healing }
         return min(base, 3) + healing
+    }
+
+    /// During a burst that is arriving faster than the current presentation/decode horizon, run
+    /// only the immediately useful four-token stage. This is compute staging, not a pre-decode
+    /// sleep: generation still starts at once, and a stable interval retains the explicitly chosen
+    /// Long budget. Healing slack is mandatory and therefore sits outside the four-token stage.
+    nonisolated static func burstAwareCompletionTokenBudget(
+        requestedMaxCompletionTokens: Int,
+        healExtraTokens: Int,
+        elapsedSincePreviousRequestNanoseconds: UInt64?,
+        debounceNanoseconds: UInt64,
+        lastGenerationLatencyMs: Double?
+    ) -> Int {
+        let requested = max(0, requestedMaxCompletionTokens)
+        let healing = max(0, healExtraTokens)
+        let immediateStage = 4 + healing
+        guard requested > immediateStage,
+              let elapsed = elapsedSincePreviousRequestNanoseconds else {
+            return requested
+        }
+
+        let generationHorizon = UInt64(max(0, lastGenerationLatencyMs ?? 0) * 1_000_000)
+        let burstHorizon = max(debounceNanoseconds, generationHorizon)
+        return elapsed < burstHorizon ? immediateStage : requested
     }
 
     private func promptSideContext(
@@ -1461,6 +1500,7 @@ final class CompletionController {
         lastContextKey = nil
         lastCaretRect = nil
         frozenSideContext = nil
+        lastGenerationRequestUptimeNanoseconds = nil
         latestSnapshot = nil
         if !keepingReuseHistory {
             reuseHistory.removeAll()
