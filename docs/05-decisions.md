@@ -135,6 +135,7 @@ row here.**
 | 113 | Route prefix-only spellcheck replacements to completion | correction/completion |
 | 114 | Lower spellcheck correction model margin | correction/model-runtime |
 | 115 | Remove aggressive correction mode | correction/settings |
+| 116 | Bound mid-line decode to visible tokens plus lookahead | generation/performance |
 
 ---
 
@@ -3589,3 +3590,19 @@ text. Both are now closed:
   detector and correction validation thresholds.
 - Consequences: Correction behavior is simpler to reason about and the Settings UI has one fewer
   safety-related toggle. Previously stored user defaults for the removed key are ignored.
+
+## ADR-116 — Bound mid-line decode to visible tokens plus lookahead
+
+- Date: 2026-08-29
+- Status: accepted
+- Context: Mid-line candidates are only eligible for display at two tokens or fewer, but requests
+  inherited the full user length preset and commonly decoded eight tokens before the filter
+  suppressed them. Capping at exactly two tokens exposed unfinished branches at the depth limit in
+  focused FIM evaluation.
+- Decision: Limit meaningful same-line/FIM requests to three generation tokens: two potentially
+  visible tokens plus one lookahead token for stop/boundary finalization. Preserve one additional
+  token when mid-word healing must re-emit a forced stem. Keep end-of-line and paragraph-boundary
+  append requests on the configured length budget.
+- Consequences: Focused release evaluation retained the quality and precision of the eight-token
+  path while reducing median generation latency by about 30%. The cap is aligned with the final
+  visibility gate, and healed requests retain enough room to satisfy their required prefix.

@@ -61,6 +61,51 @@ struct KeyTypeTests {
         #expect(CompletionController.adaptiveDebounceNanoseconds(lastGenerationLatencyMs: nil) == 25_000_000)
     }
 
+    @Test func midLineBudgetUsesTwoVisibleTokensPlusLookahead() {
+        let context = TextFieldContext(
+            beforeCursor: "Please review",
+            afterCursor: " this change",
+            geometry: TextFieldGeometry(isAtEndOfLine: false),
+            target: Self.target
+        )
+
+        #expect(CompletionController.contextAwareCompletionTokenBudget(
+            baseMaxCompletionTokens: 8,
+            healExtraTokens: 0,
+            context: context
+        ) == 3)
+    }
+
+    @Test func healedMidLineBudgetKeepsOneTokenOfPrefixSlack() {
+        let context = TextFieldContext(
+            beforeCursor: "Please revi",
+            afterCursor: " this change",
+            geometry: TextFieldGeometry(isAtEndOfLine: false),
+            target: Self.target
+        )
+
+        #expect(CompletionController.contextAwareCompletionTokenBudget(
+            baseMaxCompletionTokens: 8,
+            healExtraTokens: 1,
+            context: context
+        ) == 4)
+    }
+
+    @Test func endOfLineBudgetRetainsConfiguredLengthAndHealingSlack() {
+        let context = TextFieldContext(
+            beforeCursor: "Please review",
+            afterCursor: "\nNext paragraph",
+            geometry: TextFieldGeometry(isAtEndOfLine: true),
+            target: Self.target
+        )
+
+        #expect(CompletionController.contextAwareCompletionTokenBudget(
+            baseMaxCompletionTokens: 8,
+            healExtraTokens: 1,
+            context: context
+        ) == 9)
+    }
+
     @Test @MainActor func correctionSuffixWindowIgnoresLeadingPunctuation() {
         #expect(CompletionController.correctionSuffixWindow(from: " , they are shown") == "")
         #expect(CompletionController.correctionSuffixWindow(from: ", they are shown") == "")

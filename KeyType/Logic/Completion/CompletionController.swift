@@ -616,12 +616,17 @@ final class CompletionController {
         let healExtraTokens = healSlack > 0 ? 1 : 0
         // Completion length is user-configurable (Settings) and maps to the decoder's token/width budget.
         let length = settings.completionLength
+        let maxCompletionTokens = Self.contextAwareCompletionTokenBudget(
+            baseMaxCompletionTokens: length.maxCompletionTokens,
+            healExtraTokens: healExtraTokens,
+            context: context
+        )
         let request = CompletionRequest(
             context: context,
             prompt: promptResult.prompt,
             requiredPrefixBytes: requiredPrefixBytes,
             mode: policy.completionMode,
-            maxCompletionTokens: length.maxCompletionTokens + healExtraTokens,
+            maxCompletionTokens: maxCompletionTokens,
             maxDisplayWidth: length.maxDisplayWidth + healSlack
         )
         rememberFullPromptDebug(
@@ -1031,6 +1036,21 @@ final class CompletionController {
         if latency <= 70 { return fastDebounceNanoseconds }
         if latency <= 140 { return moderateDebounceNanoseconds }
         return conservativeDebounceNanoseconds
+    }
+
+    /// Native FIM is only displayable when the final candidate is at most two tokens. Decode one
+    /// extra token so the engine can observe a stop/boundary instead of exposing a live branch at
+    /// the depth cap. A healed request may need one additional token to re-emit the forced stem.
+    /// End-of-line and paragraph-boundary contexts retain the user's configured append budget.
+    nonisolated static func contextAwareCompletionTokenBudget(
+        baseMaxCompletionTokens: Int,
+        healExtraTokens: Int,
+        context: TextFieldContext
+    ) -> Int {
+        let base = max(0, baseMaxCompletionTokens)
+        let healing = max(0, healExtraTokens)
+        guard shouldUseCapsule(for: context) else { return base + healing }
+        return min(base, 3) + healing
     }
 
     private func promptSideContext(
