@@ -139,6 +139,7 @@ row here.**
 | 117 | Make four tokens the default completion depth | generation/performance |
 | 118 | Stage long decode work during typing bursts | generation/performance |
 | 119 | Promote generated beam state into typed anchors | model-runtime/performance |
+| 120 | Adapt beam work to visible-candidate certainty | generation/performance |
 
 ---
 
@@ -3662,3 +3663,23 @@ text. Both are now closed:
   becomes the next anchor, with identical cached logits. The optimization adds only the latest
   frontier's copy-on-write logits references and does not widen `LocalModelRuntime`; unmatched
   prompts preserve the previous correctness behavior.
+
+## ADR-120 — Adapt beam work to visible-candidate certainty
+
+- Date: 2026-08-29
+- Status: accepted
+- Context: A fixed two-branch beam spends the same work on decisive and ambiguous distributions,
+  and the decoder normally continues after the only candidate the UI can display is already
+  mathematically locked. Reducing the ordinary debounce would not remove either source of model
+  work and risks a direct latency regression.
+- Decision: At fresh-word append boundaries only, narrow the beam to one when the leading path is
+  ahead by at least 3.0 cumulative log-probability (about 20:1 odds); reconsider the decision at every token so the
+  full beam can reopen. Never narrow forced-prefix, open-word, or FIM decoding. Also stop after a
+  finalized leader strictly beats all live paths when that leader passes the production output
+  filter. Preserve the existing top-N proof for all other request shapes.
+- Consequences: Decisive appends use fewer branch sequences, and terminal visible leaders avoid
+  deeper decode calls. The shown candidate is unchanged by construction: live scores are upper
+  bounds because future token log-probabilities are non-positive, and the early leader is filtered
+  before stopping. Mid-word dictionary fallbacks and suffix reranking retain the full search. In a
+  controlled 700-case Release A/B, all 700 visible outcomes and top candidates were identical;
+  mean/p50/p95 generation fell from 71.82/69.79/107.93 ms to 69.39/68.37/104.28 ms.

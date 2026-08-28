@@ -171,7 +171,7 @@ public final class ConstrainedGenerationEngine: CompletionGenerating {
                 }
             }
 
-            live = prune(nextLive, branchWidth: effectiveBranchWidth)
+            live = prune(nextLive, branchWidth: effectiveBranchWidth, request: request)
             if shouldStopEarly(finalized: finalized, live: live, request: request) {
                 break depthLoop
             }
@@ -351,15 +351,44 @@ public final class ConstrainedGenerationEngine: CompletionGenerating {
     }
 
     /// Keep the highest-scoring branches within the relative-cutoff margin and beam width.
-    private func prune(_ branches: [GenerationBranch], branchWidth: Int) -> [GenerationBranch] {
+    private func prune(
+        _ branches: [GenerationBranch],
+        branchWidth: Int,
+        request: CompletionRequest
+    ) -> [GenerationBranch] {
         guard !branches.isEmpty else { return [] }
         var sorted = branches.sorted { $0.score > $1.score }
         let best = sorted[0].score
         sorted = sorted.filter { best - $0.score <= configuration.relativeCutoff }
-        if branchWidth > 0 && sorted.count > branchWidth {
-            sorted.removeLast(sorted.count - branchWidth)
+        let width = adaptiveBranchWidth(
+            for: sorted,
+            configuredWidth: branchWidth,
+            request: request
+        )
+        if width > 0 && sorted.count > width {
+            sorted.removeLast(sorted.count - width)
         }
         return sorted
+    }
+
+    /// Narrow only the lowest-risk search shape: a new-word append with no forced prefix or real
+    /// suffix to join. The test is repeated at every depth, so a narrowed path can fan back out as
+    /// soon as its next-token distribution becomes ambiguous.
+    private func adaptiveBranchWidth(
+        for sorted: [GenerationBranch],
+        configuredWidth: Int,
+        request: CompletionRequest
+    ) -> Int {
+        let margin = configuration.adaptiveBranchScoreMargin
+        guard margin > 0,
+              configuredWidth > 1,
+              sorted.count > 1,
+              request.requiredPrefixBytes.isEmpty,
+              request.context.afterCursor.isEmpty,
+              CurrentWordTypoGuard.trailingWord(of: request.context.beforeCursor).isEmpty,
+              sorted[0].score - sorted[1].score >= margin
+        else { return configuredWidth }
+        return 1
     }
 
     /// Proper-noun mid-word completions need one extra branch because the model often keeps several
@@ -408,11 +437,35 @@ public final class ConstrainedGenerationEngine: CompletionGenerating {
         let locked = bestByText.values.sorted { lhs, rhs in
             lhs.score != rhs.score ? lhs.score > rhs.score : lhs.text < rhs.text
         }
-        guard locked.count >= candidateLimit,
-              let bestLiveScore = live.map(\.score).max()
+        guard let bestLiveScore = live.map(\.score).max() else { return false }
+
+        if locked.count >= candidateLimit,
+           locked[candidateLimit - 1].score > bestLiveScore {
+            return true
+        }
+
+        // The UI presents only the first non-suppressed candidate. On a fresh-word append there is
+        // no healing or FIM rerank that can later reorder it, so a filter-passing finalized leader
+        // is enough: future log-probabilities are non-positive and cannot overtake it. Open words
+        // keep collecting fallback branches because the synchronous dictionary safety net may make
+        // the controller reject the apparent leader.
+        guard configuration.enableFirstCandidateEarlyStop,
+              let leader = locked.first,
+              leader.score > bestLiveScore,
+              request.requiredPrefixBytes.isEmpty,
+              request.context.afterCursor.isEmpty,
+              CurrentWordTypoGuard.trailingWord(of: request.context.beforeCursor).isEmpty
         else { return false }
 
-        return locked[candidateLimit - 1].score > bestLiveScore
+        let candidate = CompletionCandidate(
+            text: leader.text,
+            tokenIDs: leader.tokenIDs,
+            logProbability: Double(leader.score),
+            displayWidth: leader.displayWidth,
+            mode: request.mode
+        )
+        return DefaultCandidateFilter(compatibilityStore: compatibilityStore)
+            .suppressionReason(for: candidate, request: request) == nil
     }
 
     // MARK: - Suffix-likelihood rerank (round-trip join score, ADR-057)

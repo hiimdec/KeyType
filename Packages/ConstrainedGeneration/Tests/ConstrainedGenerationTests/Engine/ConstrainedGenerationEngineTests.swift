@@ -296,6 +296,80 @@ final class ConstrainedGenerationEngineTests: XCTestCase {
         XCTAssertEqual(runtime.batchCalls, 2, "ties must continue because the final text order can still change")
     }
 
+    func testAdaptiveBeamNarrowsDecisiveFreshWordLeader() async throws {
+        let profile = profile([
+            record(1, " likely"), record(2, " remote"),
+            record(11, " answer"), record(21, " chance")
+        ])
+        let runtime = CountingBatchRuntime(logitsByPath: [
+            []: [logit(1, 2.5), logit(2, 0)],
+            [1]: [logit(11, 1)],
+            [2]: [logit(21, 1)]
+        ])
+        let engine = ConstrainedGenerationEngine(runtime: runtime, profile: profile)
+
+        _ = try await engine.completions(for: request(maxTokens: 2, beforeCursor: "The "))
+
+        XCTAssertEqual(runtime.batchRequests.count, 2)
+        XCTAssertEqual(runtime.batchRequests[1].suffixes, [[1]])
+    }
+
+    func testAdaptiveBeamKeepsAmbiguousFreshWordBranches() async throws {
+        let profile = profile([
+            record(1, " likely"), record(2, " remote"),
+            record(11, " answer"), record(21, " chance")
+        ])
+        let runtime = CountingBatchRuntime(logitsByPath: [
+            []: [logit(1, 1), logit(2, 0.9)],
+            [1]: [logit(11, 1)],
+            [2]: [logit(21, 1)]
+        ])
+        let engine = ConstrainedGenerationEngine(runtime: runtime, profile: profile)
+
+        _ = try await engine.completions(for: request(maxTokens: 2, beforeCursor: "The "))
+
+        XCTAssertEqual(runtime.batchRequests.count, 2)
+        XCTAssertEqual(Set(runtime.batchRequests[1].suffixes), Set([[1], [2]]))
+    }
+
+    func testFirstVisibleCandidateStopsDefaultFiveCandidateSearch() async throws {
+        let profile = profile([
+            record(1, " done.", flags: .sentenceEnd),
+            record(2, " maybe"),
+            record(3, " later.", flags: .sentenceEnd)
+        ])
+        let runtime = CountingBatchRuntime(logitsByPath: [
+            []: [logit(1, 2), logit(2, 0)],
+            [2]: [logit(3, 10)]
+        ])
+        let engine = ConstrainedGenerationEngine(runtime: runtime, profile: profile)
+
+        let candidates = try await engine.completions(for: request(
+            maxTokens: 3,
+            beforeCursor: "Please "
+        ))
+
+        XCTAssertEqual(candidates.first?.text, " done.")
+        XCTAssertEqual(runtime.batchCalls, 1)
+    }
+
+    func testFirstVisibleCandidateDoesNotStopOnOpenWord() async throws {
+        let profile = profile([
+            record(1, "done.", flags: .sentenceEnd),
+            record(2, "haps"),
+            record(3, " later.", flags: .sentenceEnd)
+        ])
+        let runtime = CountingBatchRuntime(logitsByPath: [
+            []: [logit(1, 2), logit(2, 0)],
+            [2]: [logit(3, 10)]
+        ])
+        let engine = ConstrainedGenerationEngine(runtime: runtime, profile: profile)
+
+        _ = try await engine.completions(for: request(maxTokens: 2, beforeCursor: "per"))
+
+        XCTAssertEqual(runtime.batchCalls, 2, "open words retain fallback branches for final dictionary gates")
+    }
+
     func testRelativeCutoffPrunesWeakBranch() async throws {
         let profile = profile([
             record(1, "go"), record(2, "be"), record(11, "od"), record(21, "st")

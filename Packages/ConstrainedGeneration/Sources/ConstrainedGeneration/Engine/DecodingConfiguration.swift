@@ -16,6 +16,12 @@ public struct DecodingConfiguration: Equatable {
     public var temperature: Float
     /// Maximum number of live branches carried between steps (beam width).
     public var branchWidth: Int
+    /// At a fresh-word append, temporarily collapse the beam to one branch when the best live
+    /// branch leads the runner-up by at least this cumulative-log-probability margin. The decision
+    /// is reconsidered after every token, so ambiguity can reopen the full beam. `<= 0` disables
+    /// adaptive narrowing. Mid-word and fill-in-the-middle requests always keep the configured
+    /// width. See ADR-120.
+    public var adaptiveBranchScoreMargin: Float
     /// Cumulative-logprob margin used to prune branches: a branch is dropped when
     /// `bestScore - branchScore > relativeCutoff` (scores are cumulative log-probabilities,
     /// so larger is better and the difference is non-negative).
@@ -25,6 +31,10 @@ public struct DecodingConfiguration: Equatable {
     public var minBranchProbability: Float
     /// Upper bound on the number of finalized candidates returned to the caller.
     public var maxCandidates: Int
+    /// Stop once the top finalized fresh-word candidate passes the production output filter and
+    /// strictly outranks every live path. This preserves the only candidate the UI can display
+    /// while avoiding deeper work to collect hidden alternatives. See ADR-120.
+    public var enableFirstCandidateEarlyStop: Bool
     /// When true, mid-line requests (non-empty `afterCursor`) are decoded with native
     /// fill-in-the-middle: the prompt is assembled as `<|fim_prefix|>{prefix}<|fim_suffix|>{suffix}
     /// <|fim_middle|>` so the model conditions on the suffix instead of colliding with it. Requires
@@ -54,9 +64,11 @@ public struct DecodingConfiguration: Equatable {
         topP: Float = 0.95,
         temperature: Float = 0.8,
         branchWidth: Int = 2,
+        adaptiveBranchScoreMargin: Float = 3,
         relativeCutoff: Float = 6,
         minBranchProbability: Float = 0.02,
         maxCandidates: Int = 5,
+        enableFirstCandidateEarlyStop: Bool = true,
         enableFillInMiddle: Bool = false,
         fimMaxPrefixTokens: Int = 256,
         fimMaxSuffixTokens: Int = 64,
@@ -67,9 +79,11 @@ public struct DecodingConfiguration: Equatable {
         self.topP = topP
         self.temperature = temperature
         self.branchWidth = branchWidth
+        self.adaptiveBranchScoreMargin = adaptiveBranchScoreMargin
         self.relativeCutoff = relativeCutoff
         self.minBranchProbability = minBranchProbability
         self.maxCandidates = maxCandidates
+        self.enableFirstCandidateEarlyStop = enableFirstCandidateEarlyStop
         self.enableFillInMiddle = enableFillInMiddle
         self.fimMaxPrefixTokens = fimMaxPrefixTokens
         self.fimMaxSuffixTokens = fimMaxSuffixTokens
