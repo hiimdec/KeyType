@@ -169,6 +169,30 @@ final class CorrectionValidationScorerTests: XCTestCase {
         XCTAssertEqual(result.first?.source, .systemGrammarValidatedByModel)
     }
 
+    func testReplacementAndSuffixCandidatesShareBatchedFrontiers() async throws {
+        let runtime = Runtime(logitsByPath: [
+            [1]: [makeLogit(10, 5), makeLogit(11, 1), makeLogit(12, 0)],
+            [1, 10]: [makeLogit(20, 5), makeLogit(30, 0)],
+            [1, 11]: [makeLogit(20, 4), makeLogit(30, 0)]
+        ])
+        let scorer = CorrectionValidationScorer(runtime: runtime)
+
+        let result = try await scorer.validate(
+            candidates: [makeCandidate("middle"), makeCandidate("muddle")],
+            prefixBeforeWord: "in the ",
+            suffixWindow: " of"
+        )
+
+        XCTAssertEqual(result.map(\.replacement), ["middle"])
+        XCTAssertEqual(runtime.anchoredLogitsCallCount, 0)
+        XCTAssertEqual(
+            runtime.anchoredLogitsBatchCallCount,
+            2,
+            "original/replacements need one frontier and both suffix joins need one frontier"
+        )
+        XCTAssertEqual(runtime.batchSuffixCounts, [3, 2])
+    }
+
     private func makeCandidate(_ replacement: String) -> CorrectionCandidate {
         CorrectionCandidate(
             original: "mdidle",
@@ -222,6 +246,8 @@ private final class Runtime: LocalModelRuntime {
     let tokenizer: ModelTokenizing = Tokenizer()
     private let logitsByPath: [[TokenID]: [TokenLogit]]
     private(set) var anchoredLogitsCallCount = 0
+    private(set) var anchoredLogitsBatchCallCount = 0
+    private(set) var batchSuffixCounts: [Int] = []
 
     init(logitsByPath: [[TokenID]: [TokenLogit]]) {
         self.logitsByPath = logitsByPath
@@ -235,5 +261,11 @@ private final class Runtime: LocalModelRuntime {
     func anchoredLogits(anchor: [TokenID], suffix: [TokenID]) async throws -> [TokenLogit] {
         anchoredLogitsCallCount += 1
         return logitsByPath[anchor + suffix] ?? []
+    }
+
+    func anchoredLogitsBatch(anchor: [TokenID], suffixes: [[TokenID]]) async throws -> [[TokenLogit]] {
+        anchoredLogitsBatchCallCount += 1
+        batchSuffixCounts.append(suffixes.count)
+        return suffixes.map { logitsByPath[anchor + $0] ?? [] }
     }
 }

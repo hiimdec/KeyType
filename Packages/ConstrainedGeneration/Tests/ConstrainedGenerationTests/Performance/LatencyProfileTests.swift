@@ -104,6 +104,59 @@ final class LatencyProfileTests: XCTestCase {
         }
     }
 
+    /// Lets the same real runtime exercise either native frontier batching or the old serial loop
+    /// while recording the number of scheduling round-trips made by correction validation.
+    private final class CorrectionScoringRuntime: LocalModelRuntime {
+        let wrapped: LlamaModelRuntime
+        let useNativeBatch: Bool
+        var metadata: ModelMetadata { wrapped.metadata }
+        var tokenizer: ModelTokenizing { wrapped.tokenizer }
+        private(set) var frontierCalls = 0
+        private(set) var serialPathCalls = 0
+
+        init(_ wrapped: LlamaModelRuntime, useNativeBatch: Bool) {
+            self.wrapped = wrapped
+            self.useNativeBatch = useNativeBatch
+        }
+
+        func prepare(promptTokens: [TokenID]) async throws {
+            try await wrapped.prepare(promptTokens: promptTokens)
+        }
+
+        func logitsForNextToken() async throws -> [TokenLogit] {
+            try await wrapped.logitsForNextToken()
+        }
+
+        func decodeNext(tokenID: TokenID) async throws {
+            try await wrapped.decodeNext(tokenID: tokenID)
+        }
+
+        func resetKVCache() async {
+            await wrapped.resetKVCache()
+        }
+
+        func anchoredLogits(anchor: [TokenID], suffix: [TokenID]) async throws -> [TokenLogit] {
+            serialPathCalls += 1
+            return try await wrapped.anchoredLogits(anchor: anchor, suffix: suffix)
+        }
+
+        func anchoredLogitsBatch(
+            anchor: [TokenID],
+            suffixes: [[TokenID]]
+        ) async throws -> [[TokenLogit]] {
+            frontierCalls += 1
+            if useNativeBatch {
+                return try await wrapped.anchoredLogitsBatch(anchor: anchor, suffixes: suffixes)
+            }
+            var result: [[TokenLogit]] = []
+            result.reserveCapacity(suffixes.count)
+            for suffix in suffixes {
+                result.append(try await anchoredLogits(anchor: anchor, suffix: suffix))
+            }
+            return result
+        }
+    }
+
     private func load(enableKVFork: Bool = true) throws -> (LlamaModelRuntime, MmapAutocompleteProfile) {
         try XCTSkipUnless(ModelContainer.defaultModelExists(), "GGUF missing; skipping profile")
         let profileURL = try ModelContainer.profileURL(family: Self.family)
@@ -195,6 +248,77 @@ final class LatencyProfileTests: XCTestCase {
             print("  candidates        : \(candidates.map(\.text))\n")
         }
         print("====================================================================\n")
+    }
+
+    func testBatchedCorrectionValidationReducesLatency() async throws {
+        let (raw, _) = try load()
+        let correctionRange = TextRangeDescriptor(
+            container: .beforeCursor,
+            startOffset: 14,
+            endOffset: 34
+        )
+        let candidates = [
+            CorrectionCandidate(
+                original: "approve the proposal",
+                replacement: "approved the proposal",
+                originalRange: correctionRange,
+                confidence: 0.85,
+                source: .systemGrammarOnly,
+                validation: .spellcheckOnly
+            ),
+            CorrectionCandidate(
+                original: "approve the proposal",
+                replacement: "has approved the proposal",
+                originalRange: correctionRange,
+                confidence: 0.80,
+                source: .systemGrammarOnly,
+                validation: .spellcheckOnly
+            )
+        ]
+        let thresholds = CorrectionValidationThresholds(
+            minimumMeanLogProbability: -100,
+            minimumMargin: -100,
+            minimumSuffixMeanLogProbability: -100
+        )
+
+        func measure(useNativeBatch: Bool) async throws -> (
+            replacements: Set<String>,
+            milliseconds: Double,
+            frontiers: Int,
+            serialPaths: Int
+        ) {
+            let runtime = CorrectionScoringRuntime(raw, useNativeBatch: useNativeBatch)
+            await runtime.resetKVCache()
+            let scorer = CorrectionValidationScorer(runtime: runtime, thresholds: thresholds)
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = try await scorer.validate(
+                candidates: candidates,
+                prefixBeforeWord: "The committee ",
+                suffixWindow: " before the deadline."
+            )
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            return (Set(result.map(\.replacement)), elapsed, runtime.frontierCalls, runtime.serialPathCalls)
+        }
+
+        // Warm model kernels and both scheduling paths before comparing fresh-cache runs.
+        _ = try await measure(useNativeBatch: false)
+        _ = try await measure(useNativeBatch: true)
+        let serial = try await measure(useNativeBatch: false)
+        let batched = try await measure(useNativeBatch: true)
+
+        print("\n================ correction validation batching ================")
+        print(String(format: "serial:  %7.1f ms  path calls=%d", serial.milliseconds, serial.serialPaths))
+        print(String(format: "batched: %7.1f ms  frontiers=%d", batched.milliseconds, batched.frontiers))
+        print("=================================================================\n")
+
+        XCTAssertEqual(batched.replacements, serial.replacements)
+        XCTAssertLessThan(batched.frontiers, serial.serialPaths)
+        XCTAssertLessThan(
+            batched.milliseconds,
+            serial.milliseconds,
+            "native correction frontiers should beat serial candidate scoring in Release"
+        )
+        await raw.shutdown()
     }
 
     /// Asserts the ADR-018 win: with KV fork on, the base prompt is prefilled exactly **once** per

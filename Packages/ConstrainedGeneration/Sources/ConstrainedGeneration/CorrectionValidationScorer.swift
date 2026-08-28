@@ -60,22 +60,32 @@ public final class CorrectionValidationScorer {
 
         let prefixTokens = try runtime.tokenizer.tokenize(prefixBeforeWord)
         let original = candidates.first?.original ?? ""
-        let originalScore = try await meanLogProbability(
-            of: original,
-            anchor: prefixTokens
+        let replacementTokens = try ([original] + candidates.map(\.replacement)).map {
+            try runtime.tokenizer.tokenize($0)
+        }
+        let replacementScores = try await meanLogProbabilities(
+            tokenSequences: replacementTokens,
+            anchors: Array(repeating: prefixTokens, count: replacementTokens.count)
         )
+        let originalScore = replacementScores[0]
+
+        let suffixScores: [Double?]
+        if suffixWindow.isEmpty {
+            suffixScores = Array(repeating: nil, count: candidates.count)
+        } else {
+            let suffixTokens = try runtime.tokenizer.tokenize(suffixWindow)
+            let candidateTokens = Array(replacementTokens.dropFirst())
+            let scores = try await meanLogProbabilities(
+                tokenSequences: Array(repeating: suffixTokens, count: candidates.count),
+                anchors: candidateTokens.map { prefixTokens + $0 }
+            )
+            suffixScores = scores.map(Optional.some)
+        }
 
         var scored: [(candidate: CorrectionCandidate, score: Double, suffixScore: Double?)] = []
-        for candidate in candidates {
+        for (index, candidate) in candidates.enumerated() {
             try Task.checkCancellation()
-            let score = try await meanLogProbability(of: candidate.replacement, anchor: prefixTokens)
-            let suffixScore = suffixWindow.isEmpty
-                ? nil
-                : try await meanLogProbability(
-                    of: suffixWindow,
-                    anchor: prefixTokens + runtime.tokenizer.tokenize(candidate.replacement)
-                )
-            scored.append((candidate, score, suffixScore))
+            scored.append((candidate, replacementScores[index + 1], suffixScores[index]))
         }
 
         let rankedScores = scored.map(\.score).sorted(by: >)
@@ -126,22 +136,76 @@ public final class CorrectionValidationScorer {
         }
     }
 
-    private func meanLogProbability(of text: String, anchor: [TokenID]) async throws -> Double {
-        let tokens = try runtime.tokenizer.tokenize(text)
-        guard !tokens.isEmpty else { return -.infinity }
-
-        var suffix: [TokenID] = []
-        var total = 0.0
-        for token in tokens {
-            try Task.checkCancellation()
-            let logits = try await runtime.anchoredLogits(anchor: anchor, suffix: suffix)
-            guard let logProbability = Self.logProbability(of: token, in: logits) else {
-                return -.infinity
-            }
-            total += logProbability
-            suffix.append(token)
+    /// Score multiple target token sequences together, grouping every active path at the same
+    /// target depth into one runtime frontier call. Anchors may differ (suffix-join validation), so
+    /// their common prefix becomes the resident anchor and each remaining tail becomes a suffix.
+    /// This is semantically the same autoregressive log-probability calculation as serial scoring.
+    private func meanLogProbabilities(
+        tokenSequences: [[TokenID]],
+        anchors: [[TokenID]]
+    ) async throws -> [Double] {
+        guard tokenSequences.count == anchors.count else {
+            return Array(repeating: -.infinity, count: tokenSequences.count)
         }
-        return total / Double(tokens.count)
+        guard !tokenSequences.isEmpty else { return [] }
+
+        let sharedAnchor = Self.commonTokenPrefix(anchors)
+        let anchorTails = anchors.map { Array($0.dropFirst(sharedAnchor.count)) }
+        var totals = Array(repeating: 0.0, count: tokenSequences.count)
+        var valid = tokenSequences.map { !$0.isEmpty }
+        let maxDepth = tokenSequences.map(\.count).max() ?? 0
+
+        for depth in 0..<maxDepth {
+            try Task.checkCancellation()
+            let active = tokenSequences.indices.filter {
+                valid[$0] && depth < tokenSequences[$0].count
+            }
+            guard !active.isEmpty else { break }
+
+            let suffixes = active.map { index in
+                anchorTails[index] + Array(tokenSequences[index].prefix(depth))
+            }
+            let frontier = try await runtime.anchoredLogitsBatch(
+                anchor: sharedAnchor,
+                suffixes: suffixes
+            )
+            guard frontier.count == active.count else {
+                for index in active { valid[index] = false }
+                continue
+            }
+
+            for (index, logits) in zip(active, frontier) {
+                guard let logProbability = Self.logProbability(
+                    of: tokenSequences[index][depth],
+                    in: logits
+                ) else {
+                    valid[index] = false
+                    continue
+                }
+                totals[index] += logProbability
+            }
+        }
+
+        return tokenSequences.indices.map { index in
+            guard valid[index], !tokenSequences[index].isEmpty else { return -.infinity }
+            return totals[index] / Double(tokenSequences[index].count)
+        }
+    }
+
+    private static func commonTokenPrefix(_ sequences: [[TokenID]]) -> [TokenID] {
+        guard var prefix = sequences.first else { return [] }
+        for sequence in sequences.dropFirst() {
+            let count = min(prefix.count, sequence.count)
+            var index = 0
+            while index < count, prefix[index] == sequence[index] {
+                index += 1
+            }
+            if index < prefix.count {
+                prefix.removeSubrange(index..<prefix.count)
+            }
+            if prefix.isEmpty { break }
+        }
+        return prefix
     }
 
     private static func logProbability(of token: TokenID, in logits: [TokenLogit]) -> Double? {

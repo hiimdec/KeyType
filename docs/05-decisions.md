@@ -140,6 +140,7 @@ row here.**
 | 118 | Stage long decode work during typing bursts | generation/performance |
 | 119 | Promote generated beam state into typed anchors | model-runtime/performance |
 | 120 | Adapt beam work to visible-candidate certainty | generation/performance |
+| 121 | Batch correction candidates by token depth | generation/performance |
 
 ---
 
@@ -3683,3 +3684,20 @@ text. Both are now closed:
   before stopping. Mid-word dictionary fallbacks and suffix reranking retain the full search. In a
   controlled 700-case Release A/B, all 700 visible outcomes and top candidates were identical;
   mean/p50/p95 generation fell from 71.82/69.79/107.93 ms to 69.39/68.37/104.28 ms.
+
+## ADR-121 — Batch correction candidates by token depth
+
+- Date: 2026-08-29
+- Status: accepted
+- Context: Model validation scored the misspelled original, each replacement, and each
+  replacement-to-suffix join serially. Every token of every candidate therefore scheduled its own
+  runtime call, even though all paths shared a prefix and the runtime already supported
+  multi-sequence frontier decoding.
+- Decision: Tokenize the original and replacements once, find their shared anchor, and score every
+  active path together at each target-token depth with `anchoredLogitsBatch`. Apply the same process
+  to suffix joins, using the common prefix of the replacement-specific anchors. Preserve the exact
+  log-softmax, mean-score, margin, suffix, and cancellation semantics of serial validation.
+- Consequences: A representative two-candidate, real-model Release probe reduced scheduling calls
+  from 18 serial paths to 8 batched frontiers and wall time from 103.1 ms to 62.9 ms (39%), while
+  returning the same validated replacements. Empty or unscorable paths still receive negative
+  infinity and are suppressed by the existing thresholds.
